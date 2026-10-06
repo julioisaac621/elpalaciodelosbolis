@@ -1567,11 +1567,58 @@ function openAdm(){admOpen=true;root.hidden=false;document.body.classList.add("c
 function closeAdm(){admOpen=false;root.hidden=true;document.body.classList.remove("cart-open")}
 document.getElementById("admopen").onclick=openAdm;
 addEventListener("keydown",e=>{if(e.key==="Escape"&&admOpen)closeAdm()});
+
+/* ── Acceso discreto: #admin / #login y Ctrl/Cmd + Shift + A ── */
+function hashAdm(){
+  const h=location.hash.toLowerCase();
+  if(h!=="#admin"&&h!=="#login")return;
+  try{history.replaceState(null,"",location.pathname+location.search)}catch(e){}
+  if(!admOpen)openAdm();
+}
+addEventListener("hashchange",hashAdm);
+addEventListener("keydown",e=>{
+  if(e.shiftKey&&(e.ctrlKey||e.metaKey)&&!e.altKey&&String(e.key).toLowerCase()==="a"){
+    e.preventDefault();
+    if(admOpen){const i=abody.querySelector("input");if(i)i.focus()}else openAdm();
+  }
+});
+
+/* ── Protección contra intentos repetidos (bloqueo temporal en este navegador) ── */
+const LK="pdb_adm_lock_v1",MAXTRY=5;
+const lk={get(){try{const v=JSON.parse(localStorage.getItem(LK));return v&&typeof v==="object"?v:{n:0,until:0,t:0}}catch(e){return{n:0,until:0,t:0}}},
+  set(v){try{localStorage.setItem(LK,JSON.stringify(v))}catch(e){}}};
+let lkTimer=0;
+const lockLeft=()=>Math.max(0,Math.ceil((lk.get().until-Date.now())/1000));
+const fmtS=s=>s>=60?Math.ceil(s/60)+" min":s+" s";
+function paintLock(){
+  clearInterval(lkTimer);
+  const f=document.getElementById("admlogin");if(!f)return;
+  const b=f.querySelector("button"),i=f.querySelector("input");
+  if(lockLeft()<=0){b.disabled=i.disabled=false;return}
+  b.disabled=i.disabled=true;
+  const tick=()=>{
+    if(!document.getElementById("admlogin")){clearInterval(lkTimer);return}
+    const r=lockLeft();
+    if(r<=0){clearInterval(lkTimer);b.disabled=i.disabled=false;say("");i.focus()}
+    else say("Demasiados intentos. Espera "+fmtS(r)+" para volver a intentar.",1);
+  };
+  tick();lkTimer=setInterval(tick,1000);
+}
+function loginFail(){
+  let st=lk.get();
+  if(Date.now()-(st.t||0)>3600000)st={n:0,until:0,t:0};
+  st.n=(st.n||0)+1;st.t=Date.now();
+  if(st.n>=MAXTRY)st.until=Date.now()+Math.min(900,30*Math.pow(2,st.n-MAXTRY))*1000;
+  lk.set(st);
+  if(st.n>=MAXTRY)paintLock();
+  else say("Clave incorrecta. Te quedan "+(MAXTRY-st.n)+" intento"+(MAXTRY-st.n===1?"":"s")+".",1);
+}
+hashAdm(); /* si la página se abrió con #admin o #login */
 root.addEventListener("mousedown",e=>{if(e.target===root)closeAdm()});
 
 function renderAdmin(){
   box.querySelector('[data-a="logout"]').hidden=!pw;
-  if(!pw){abody.innerHTML='<form id="admlogin" class="admlogin"><label for="admpw">Clave de administrador</label><input type="password" id="admpw" autocomplete="current-password" placeholder="Escribe la clave"><button class="btn main" type="submit">Entrar</button></form>';return}
+  if(!pw){abody.innerHTML='<form id="admlogin" class="admlogin"><label for="admpw">Clave de administrador</label><input type="password" id="admpw" autocomplete="off" placeholder="Escribe la clave"><button class="btn main" type="submit">Entrar</button></form>';paintLock();return}
   abody.innerHTML=adm.edit?formHTML(adm.edit):listHTML();
   if(adm.edit)syncPrepUI();
 }
@@ -1644,11 +1691,17 @@ async function saveForm(f){
 box.addEventListener("submit",async e=>{
   e.preventDefault();
   if(e.target.id==="admlogin"){
-    const v=document.getElementById("admpw").value;if(!v)return;const b=e.target.querySelector("button");b.disabled=true;
+    const inp=document.getElementById("admpw"),v=inp.value;
+    inp.value="";                                   /* el campo se limpia al instante */
+    if(lockLeft()>0){paintLock();return}
+    if(!v)return;
+    const b=e.target.querySelector("button");b.disabled=true;
     if(!supa){b.disabled=false;return say("Sin conexión con la base de datos.",1)}
-    const r=await supa.rpc("admin_login",{p_clave:v});b.disabled=false;
-    if(r.error)return say("No se pudo verificar. ¿Ejecutaste setup.sql?",1);
-    if(r.data!==true)return say("Clave incorrecta.",1);
+    let r;try{r=await supa.rpc("admin_login",{p_clave:v})}catch(x){r={error:x}}
+    b.disabled=false;inp.value="";
+    if(r.error)return say("No se pudo verificar. Revisa tu conexión e intenta de nuevo.",1);
+    if(r.data!==true){loginFail();return}
+    lk.set({n:0,until:0,t:0});
     pw=v;say("");renderAdmin();
   }else if(e.target.id==="admform")saveForm(e.target);
 });
